@@ -7,6 +7,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
+using System.Reflection;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -16,6 +17,7 @@ using Microsoft.AspNetCore.Testing;
 using Microsoft.AspNetCore.Testing.xunit;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Testing;
+using OpenQA.Selenium.Chrome;
 using Xunit;
 
 namespace Interop.FunctionalTests
@@ -40,7 +42,7 @@ namespace Interop.FunctionalTests
         private string NetLogPath { get; set; }
         private string StartupLogPath { get; set; }
         private string ShutdownLogPath { get; set; }
-        private string ChromeArgs { get; set; }
+        private string[] ChromeArgs { get; set; }
 
         private void InitializeArgs()
         {
@@ -48,17 +50,17 @@ namespace Interop.FunctionalTests
             StartupLogPath = Path.Combine(ResolvedLogOutputDirectory, $"{ResolvedTestMethodName}.su.json");
             ShutdownLogPath = Path.Combine(ResolvedLogOutputDirectory, $"{ResolvedTestMethodName}.sd.json");
 
-            ChromeArgs = $"--headless " +
-                $"--no-sandbox " +
-                $"--disable-gpu " +
-                $"--allow-insecure-localhost " +
-                $"--ignore-certificate-errors --enable-features=NetworkService " +
-                $"--enable-logging " +
-                $"--dump-dom " +
-                $"--virtual-time-budget=10000 " +
-                $"--log-net-log={NetLogPath} " +
-                $"--trace-startup --trace-startup-file={StartupLogPath} " +
-                $"--trace-shutdown --trace-shutdown-file={ShutdownLogPath}";
+            ChromeArgs = new [] {
+                $"--headless ",
+                $"--no-sandbox ",
+                $"--disable-gpu ",
+                $"--allow-insecure-localhost ",
+                $"--ignore-certificate-errors --enable-features=NetworkService ",
+                $"--enable-logging ",
+                $"--log-net-log={NetLogPath} ",
+                $"--trace-startup --trace-startup-file={StartupLogPath} ",
+                $"--trace-shutdown --trace-shutdown-file={ShutdownLogPath}"
+            };
         }
 
         [ConditionalTheory]
@@ -66,7 +68,7 @@ namespace Interop.FunctionalTests
         [MinimumOSVersion(OperatingSystems.Windows, WindowsVersions.Win81, SkipReason = "Missing Windows ALPN support: https://en.wikipedia.org/wiki/Application-Layer_Protocol_Negotiation#Support")]
         [InlineData("", "Interop HTTP/2 GET")]
         [InlineData("?TestMethod=POST", "Interop HTTP/2 POST")]
-        public async Task Http2(string requestSuffix, string expectedResponse)
+        public void Http2(string requestSuffix, string expectedResponse)
         {
             InitializeArgs();
 
@@ -88,36 +90,21 @@ namespace Interop.FunctionalTests
                 listenOptions.UseHttps(TestResources.GetTestCertificate());
             })))
             {
-                var chromeOutput = await RunHeadlessChrome($"https://localhost:{server.Port}/{requestSuffix}");
+                var chromeOutput = RunHeadlessChrome($"https://localhost:{server.Port}/{requestSuffix}");
 
                 AssertExpectedResponseOrShowDebugInstructions(expectedResponse, chromeOutput);
             }
         }
 
-        private async Task<string> RunHeadlessChrome(string testUrl)
+        private string RunHeadlessChrome(string testUrl)
         {
-            var chromeArgs = $"{ChromeArgs} {testUrl}";
-            var chromeStartInfo = new ProcessStartInfo
-            {
-                FileName = ChromeConstants.ExecutablePath,
-                Arguments = chromeArgs,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardError = true,
-                RedirectStandardOutput = true
-            };
+            var chromeOptions = new ChromeOptions();
+            chromeOptions.AddArguments(ChromeArgs);
 
-            Logger.LogInformation($"Staring chrome: {ChromeConstants.ExecutablePath} {chromeArgs}");
+            var driver = new ChromeDriver(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), chromeOptions);
+            driver.Navigate().GoToUrl(testUrl);
 
-            var headlessChromeProcess = Process.Start(chromeStartInfo);
-            var chromeOutput = await headlessChromeProcess.StandardOutput.ReadToEndAsync();
-            var chromeError = await headlessChromeProcess.StandardError.ReadToEndAsync();
-            Logger.LogInformation($"Standard output: {chromeOutput}");
-            Logger.LogInformation($"Standard error: {chromeError}");
-
-            headlessChromeProcess.WaitForExit();
-
-            return chromeOutput;
+            return driver.PageSource;
         }
 
         private void AssertExpectedResponseOrShowDebugInstructions(string expectedResponse, string actualResponse)
